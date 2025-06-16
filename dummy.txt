@@ -1,83 +1,476 @@
-@Component
-public class MinAgeRule implements Rule {
-    @Override
-    public String getName() {
-        return "MinAgeRule";
+package com.example.ruleengine.config;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.core.io.Resource;
+import org.springframework.validation.annotation.Validated;
+
+@Data
+@Configuration
+@ConfigurationProperties(prefix = "rule-engine")
+@Validated
+public class RuleEngineProperties {
+    private Resource validationFile;
+    private Resource userValidationFile;
+}
+---------------------
+package com.example.ruleengine.config;
+
+import com.example.ruleengine.rules.RuleDefinition;
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.PropertySource;
+import org.springframework.context.annotation.Bean;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.Resource;
+import org.yaml.snakeyaml.Yaml;
+
+import javax.annotation.PostConstruct;
+import java.io.InputStream;
+import java.util.List;
+
+@Configuration
+public class ValidationConfig {
+
+    @Autowired
+    private RuleEngineProperties properties;
+
+    private List<RuleDefinition> rules;
+
+    @PostConstruct
+    public void loadRules() throws Exception {
+        Resource resource = properties.getValidationFile();
+        if (resource == null) {
+            throw new IllegalStateException("validationFile not configured");
+        }
+        try (InputStream is = resource.getInputStream()) {
+            Yaml yaml = new Yaml();
+            ValidationYaml validationYaml = yaml.loadAs(is, ValidationYaml.class);
+            this.rules = validationYaml.getRules();
+        }
     }
 
-    @Override
-    public boolean evaluate(RuleContext context, Map<String, Object> params) {
-        Integer minAge = (Integer) params.get("minAge");
-        Integer age = (Integer) new SpelExpressionParser()
-            .parseExpression((String) params.get("source"))
-            .getValue(context);
-        return age != null && age >= minAge;
+    @Bean
+    public List<RuleDefinition> ruleDefinitions() {
+        return rules;
+    }
+
+    @Data
+    public static class ValidationYaml {
+        private List<RuleDefinition> rules;
     }
 }
-------------------
+--------------------
+package com.example.ruleengine.config;
 
-@Component
-public class EmailRequiredRule implements Rule {
-    @Override
-    public String getName() {
-        return "EmailRequiredRule";
+import com.example.ruleengine.rules.FieldValidationConfig;
+import lombok.Data;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.core.io.Resource;
+import org.yaml.snakeyaml.Yaml;
+
+import javax.annotation.PostConstruct;
+import java.io.InputStream;
+import java.util.Map;
+
+@Configuration
+public class UserValidationConfig {
+
+    @Autowired
+    private RuleEngineProperties properties;
+
+    private Map<String, FieldValidationConfig> fields;
+
+    @PostConstruct
+    public void loadUserValidations() throws Exception {
+        Resource resource = properties.getUserValidationFile();
+        if (resource == null) {
+            throw new IllegalStateException("userValidationFile not configured");
+        }
+        try (InputStream is = resource.getInputStream()) {
+            Yaml yaml = new Yaml();
+            UserValidationYaml userValidationYaml = yaml.loadAs(is, UserValidationYaml.class);
+            this.fields = userValidationYaml.getValidations().getUser().getFields();
+        }
     }
 
-    @Override
-    public boolean evaluate(RuleContext context, Map<String, Object> params) {
-        String email = (String) new SpelExpressionParser()
-            .parseExpression((String) params.get("expression"))
-            .getValue(context);
-        return email != null && !email.trim().isEmpty();
+    @Bean
+    public Map<String, FieldValidationConfig> userFieldValidations() {
+        return fields;
+    }
+
+    @Data
+    public static class UserValidationYaml {
+        private Validations validations;
+    }
+
+    @Data
+    public static class Validations {
+        private User user;
+    }
+
+    @Data
+    public static class User {
+        private Map<String, FieldValidationConfig> fields;
     }
 }
-------------------
-@Component
-public class UsernameAlphaNumericRule implements Rule {
-    @Override
-    public String getName() {
-        return "UsernameAlphaNumericRule";
-    }
+--------------------------
 
-    @Override
-    public boolean evaluate(RuleContext context, Map<String, Object> params) {
-        String username = (String) new SpelExpressionParser()
-            .parseExpression((String) params.get("source"))
-            .getValue(context);
-        return username != null && username.matches("[a-zA-Z0-9]+");
+package com.example.ruleengine.rules;
+
+import lombok.Data;
+
+import java.util.Map;
+
+@Data
+public class RuleDefinition {
+    private String name;
+    private String className;
+    private boolean enabled;
+    private String severity;
+    private String message;
+    private Map<String, Object> params;
+
+    // Support YAML field `class` -> map to className for clarity
+    public void setClass(String className) {
+        this.className = className;
     }
+}
+-------------------
+package com.example.ruleengine.rules;
+
+import lombok.Data;
+
+import java.util.Map;
+
+@Data
+public class FieldValidationConfig {
+    private boolean enabled;
+    private Map<String, Object> rules;  // will hold AND/OR/NOT or rule keys
+}
+-------------------
+
+package com.example.ruleengine.rules;
+
+import com.example.ruleengine.util.RuleResult;
+
+import java.util.Map;
+
+public interface Rule {
+    RuleResult validate(Object userDto, Object dbUser, Map<String, Object> params);
+}
+----------------------
+
+package com.example.ruleengine.util;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+
+@Data
+@AllArgsConstructor
+public class RuleResult {
+    private boolean success;
+    private String severity;  // HARD or WARNING
+    private String message;
 }
 ---------------------
 
-spring:
-  config:
-    import: classpath:rules-config.yml
+package com.example.ruleengine.rules;
+
+import com.example.ruleengine.util.RuleResult;
+import org.springframework.expression.ExpressionParser;
+import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.expression.EvaluationContext;
+import org.springframework.expression.spel.support.StandardEvaluationContext;
+
+import java.util.Map;
+
+public class AgeCheckRule implements Rule {
+
+    private final ExpressionParser parser = new SpelExpressionParser();
+
+    @Override
+    public RuleResult validate(Object userDto, Object dbUser, Map<String, Object> params) {
+        Integer minAge = (Integer) params.get("minAge");
+        // The ageSource param is just metadata describing source, not used to evaluate here.
+
+        EvaluationContext context = new StandardEvaluationContext();
+        context.setVariable("payload", userDto);
+        context.setVariable("dbUser", dbUser);
+
+        // Try get age from payload, if null fallback to dbUser
+        Integer age = parser.parseExpression("#payload.age != null ? #payload.age : #dbUser.age").getValue(context, Integer.class);
+
+        boolean valid = (age != null) && (age >= minAge);
+
+        return new RuleResult(
+                valid,
+                params.getOrDefault("severity", "HARD").toString(),
+                valid ? null : (String) params.get("message"));
+    }
+}
+--------------------
+
+package com.example.ruleengine.rules;
+
+import com.example.ruleengine.util.RuleResult;
+import org.springframework.expression.ExpressionParser;
+import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.expression.EvaluationContext;
+import org.springframework.expression.spel.support.StandardEvaluationContext;
+
+import java.util.Map;
+
+public class EmailDomainRule implements Rule {
+
+    private final ExpressionParser parser = new SpelExpressionParser();
+
+    @Override
+    public RuleResult validate(Object userDto, Object dbUser, Map<String, Object> params) {
+        String allowedDomain = (String) params.get("allowedDomain");
+
+        EvaluationContext context = new StandardEvaluationContext();
+        context.setVariable("payload", userDto);
+
+        String email = parser.parseExpression("#payload.email").getValue(context, String.class);
+
+        boolean valid = email != null && email.endsWith("@" + allowedDomain);
+
+        return new RuleResult(
+                valid,
+                params.getOrDefault("severity", "WARNING").toString(),
+                valid ? null : (String) params.get("message"));
+    }
+}
+---------------------------
+
+package com.example.ruleengine.rules;
+
+import com.example.ruleengine.util.RuleResult;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+
+@Slf4j
+@Component
+public class RuleEngine {
+
+    private final Map<String, Rule> ruleInstances = new HashMap<>();
+    private final Map<String, RuleDefinition> ruleDefinitions;
+    private final Map<String, FieldValidationConfig> userValidations;
+
+    @Autowired
+    public RuleEngine(List<RuleDefinition> ruleDefinitions, Map<String, FieldValidationConfig> userValidations, ApplicationContext ctx) {
+        this.ruleDefinitions = new HashMap<>();
+        ruleDefinitions.forEach(def -> this.ruleDefinitions.put(def.getName(), def));
+        this.userValidations = userValidations;
+
+        // Instantiate rule classes from className, register in ruleInstances map
+        ruleDefinitions.forEach(def -> {
+            try {
+                Class<?> clazz = Class.forName(def.getClassName());
+                Rule instance = (Rule) ctx.getBean(clazz);
+                ruleInstances.put(def.getName(), instance);
+            } catch (Exception e) {
+                log.error("Error loading rule class: " + def.getClassName(), e);
+            }
+        });
+    }
+
+    public Map<String, Map<String, String>> validate(Object userDto, Object dbUser) {
+        Map<String, String> hardErrors = new LinkedHashMap<>();
+        Map<String, String> warningErrors = new LinkedHashMap<>();
+
+        for (Map.Entry<String, FieldValidationConfig> fieldEntry : userValidations.entrySet()) {
+            String field = fieldEntry.getKey();
+            FieldValidationConfig fieldConfig = fieldEntry.getValue();
+
+            if (!fieldConfig.isEnabled()) {
+                continue;
+            }
+
+            List<RuleResult> results = evaluateRulesRecursively(fieldConfig.getRules(), userDto, dbUser);
+
+            for (RuleResult res : results) {
+                if (!res.isSuccess()) {
+                    if ("HARD".equalsIgnoreCase(res.getSeverity())) {
+                        hardErrors.put(field, res.getMessage());
+                    } else {
+                        warningErrors.put(field, res.getMessage());
+                    }
+                }
+            }
+        }
+
+        Map<String, Map<String, String>> combined = new HashMap<>();
+        combined.put("hardErrors", hardErrors);
+        combined.put("warningErrors", warningErrors);
+        return combined;
+    }
+
+    // Recursive evaluation of combined rules with AND/OR/NOT operators
+    private List<RuleResult> evaluateRulesRecursively(Map<String, Object> ruleNode, Object userDto, Object dbUser) {
+        List<RuleResult> results = new ArrayList<>();
+
+        if (ruleNode.containsKey("and")) {
+            List<Object> andRules = (List<Object>) ruleNode.get("and");
+            List<RuleResult> andResults = new ArrayList<>();
+            for (Object r : andRules) {
+                andResults.addAll(evaluateRulesNode(r, userDto, dbUser));
+            }
+            results.addAll(andResults);
+        } else if (ruleNode.containsKey("or")) {
+            List<Object> orRules = (List<Object>) ruleNode.get("or");
+            List<RuleResult> orResults = new ArrayList<>();
+            for (Object r : orRules) {
+                orResults.addAll(evaluateRulesNode(r, userDto, dbUser));
+            }
+            results.addAll(orResults);
+        } else if (ruleNode.containsKey("not")) {
+            Object notRule = ruleNode.get("not");
+            List<RuleResult> notResults = evaluateRulesNode(notRule, userDto, dbUser);
+            for (RuleResult r : notResults) {
+                // invert result
+                RuleResult inverted = new RuleResult(!r.isSuccess(), r.getSeverity(), r.getMessage());
+                results.add(inverted);
+            }
+        } else {
+            // simple rule
+            results.addAll(evaluateRulesNode(ruleNode, userDto, dbUser));
+        }
+
+        return results;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<RuleResult> evaluateRulesNode(Object node, Object userDto, Object dbUser) {
+        List<RuleResult> results = new ArrayList<>();
+
+        if (node instanceof Map) {
+            Map<String, Object> mapNode = (Map<String, Object>) node;
+            if (mapNode.containsKey("rule")) {
+                String ruleName = (String) mapNode.get("rule");
+                RuleDefinition def = ruleDefinitions.get(ruleName);
+                if (def == null || !def.isEnabled()) {
+                    return results;
+                }
+                Rule rule = ruleInstances.get(ruleName);
+                if (rule == null) {
+                    return results;
+                }
+                RuleResult res = rule.validate(userDto, dbUser, def.getParams());
+                results.add(res);
+            } else {
+                // Nested operators? recurse
+                results.addAll(evaluateRulesRecursively(mapNode, userDto, dbUser));
+            }
+        }
+
+        return results;
+    }
+}
+---------------------------
+
+package com.example.ruleengine.model;
+
+import lombok.Data;
+
+@Data
+public class UserDto {
+    private Integer age;
+    private String email;
+}
+---------------------
+package com.example.ruleengine.model;
+
+import lombok.Data;
+
+@Data
+public class DbUser {
+    private Integer age;
+    private String email;
+}
+
+----------------
+package com.example.ruleengine.controller;
+
+import com.example.ruleengine.model.DbUser;
+import com.example.ruleengine.model.UserDto;
+import com.example.ruleengine.rules.RuleEngine;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/validate")
+public class ValidationController {
+
+    @Autowired
+    private RuleEngine ruleEngine;
+
+    @PostMapping("/user")
+    public Map<String, Map<String, String>> validateUser(@RequestBody UserDto userDto) {
+        // Simulate DB fetch
+        DbUser dbUser = new DbUser();
+        dbUser.setAge(20);
+        dbUser.setEmail("user@corporate.com");
+
+        return ruleEngine.validate(userDto, dbUser);
+    }
+}
+-------------------
+
+application.yml
 
 rule-engine:
-  rule-set: ${rules-config.rule-set}
------------
+  validation-file: classpath:validation.yml
+  user-validation-file: classpath:user-validation.yml
+------------
+validation.yml
 
-rules-config:
-  rule-set:
-    operator: AND
-    rules:
-      - name: MinAgeRule
-        severity: HARD
-        errorMessage: "User must be at least 18"
-        params:
-          minAge: 18
-          source: "request.age ?: dbState.age"
+rules:
+  - name: AgeCheckRule
+    class: com.example.ruleengine.rules.AgeCheckRule
+    enabled: true
+    severity: HARD
+    message: "Age must be at least minimum age"
+    params:
+      minAge: 18
+      ageSource: "payload.age or dbUser.age if payload missing"
 
-      - operator: OR
+  - name: EmailDomainRule
+    class: com.example.ruleengine.rules.EmailDomainRule
+    enabled: true
+    severity: WARNING
+    message: "Email domain must be corporate.com"
+    params:
+      allowedDomain: "corporate.com"
+      emailSource: "payload.email"
+
+---------------user-validation.yml
+
+
+validations:
+  user:
+    fields:
+      age:
+        enabled: true
         rules:
-          - name: EmailRequiredRule
-            severity: WARNING
-            errorMessage: "Email is missing"
-            params:
-              expression: "request.email"
-
-          - name: UsernameAlphaNumericRule
-            severity: HARD
-            errorMessage: "Username must be alphanumeric"
-            params:
-              source: "request.username"
+          and:
+            - rule: AgeCheckRule
+            - not:
+                rule: BlacklistAgeRule   # example, you can add later
+      email:
+        enabled: true
+        rules:
+          or:
+            - rule: EmailDomainRule
+            - rule: EmailFormatRule   # example, you can add later
