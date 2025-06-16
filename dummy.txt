@@ -1,17 +1,71 @@
-package com.example.ruleengine.engine;
+package com.example.ruleengine.engine.context;
 
+import lombok.AllArgsConstructor;
 import lombok.Data;
 
-import java.util.List;
-import java.util.Map;
-
 @Data
-public class RuleDefinition {
-    private String name;
-    private Boolean enabled = true;
-    private String severity;
-    private String errorMessage;
-    private Map<String, Object> params;
-    private String operator; // AND, OR, NOT
-    private List<RuleDefinition> rules; // Nested rules
+@AllArgsConstructor
+public class RuleContext {
+    private Object request;
+    private Object dbState;
+}
+
+
+package com.example.ruleengine.engine;
+
+import com.example.ruleengine.engine.context.RuleContext;
+import com.example.ruleengine.rules.Rule;
+import com.example.ruleengine.rules.RuleRegistry;
+import lombok.RequiredArgsConstructor;
+import org.springframework.expression.ExpressionParser;
+import org.springframework.expression.spel.standard.SpelExpressionParser;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+
+@Component
+@RequiredArgsConstructor
+public class RuleEvaluator {
+
+    private final RuleRegistry ruleRegistry;
+    private final ExpressionParser parser = new SpelExpressionParser();
+
+    public Map<String, List<String>> evaluate(RuleDefinition root, RuleContext context) {
+        Map<String, String> hardErrors = new LinkedHashMap<>();
+        Map<String, String> warningErrors = new LinkedHashMap<>();
+        evaluateRecursively(root, context, hardErrors, warningErrors);
+        Map<String, List<String>> result = new HashMap<>();
+        result.put("hardErrors", new ArrayList<>(hardErrors.values()));
+        result.put("warningErrors", new ArrayList<>(warningErrors.values()));
+        return result;
+    }
+
+    private boolean evaluateRecursively(RuleDefinition def, RuleContext context,
+                                        Map<String, String> hardErrors, Map<String, String> warningErrors) {
+        if (def.getOperator() != null) {
+            List<Boolean> results = new ArrayList<>();
+            for (RuleDefinition child : def.getRules()) {
+                results.add(evaluateRecursively(child, context, hardErrors, warningErrors));
+            }
+            switch (def.getOperator().toUpperCase()) {
+                case "AND": return results.stream().allMatch(Boolean::booleanValue);
+                case "OR": return results.stream().anyMatch(Boolean::booleanValue);
+                case "NOT": return results.size() == 1 && !results.get(0);
+                default: throw new RuntimeException("Unknown operator: " + def.getOperator());
+            }
+        } else {
+            if (def.getEnabled() == null || !def.getEnabled()) return true;
+            Rule rule = ruleRegistry.getRule(def.getName());
+            if (rule == null) throw new RuntimeException("Rule not found: " + def.getName());
+            boolean passed = rule.evaluate(context, def.getParams());
+            if (!passed) {
+                if ("HARD".equalsIgnoreCase(def.getSeverity())) {
+                    hardErrors.put(def.getName(), def.getErrorMessage());
+                } else {
+                    warningErrors.put(def.getName(), def.getErrorMessage());
+                }
+            }
+            return passed;
+        }
+    }
 }
