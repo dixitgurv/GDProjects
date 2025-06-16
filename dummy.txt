@@ -1,27 +1,83 @@
-package com.example.ruleengine.rules;
-
-import jakarta.annotation.PostConstruct;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Component;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
 @Component
-@RequiredArgsConstructor
-public class RuleRegistry {
-    private final List<Rule> rules;
-    private final Map<String, Rule> ruleMap = new HashMap<>();
-
-    @PostConstruct
-    public void init() {
-        for (Rule rule : rules) {
-            ruleMap.put(rule.getName(), rule);
-        }
+public class MinAgeRule implements Rule {
+    @Override
+    public String getName() {
+        return "MinAgeRule";
     }
 
-    public Rule getRule(String name) {
-        return ruleMap.get(name);
+    @Override
+    public boolean evaluate(RuleContext context, Map<String, Object> params) {
+        Integer minAge = (Integer) params.get("minAge");
+        Integer age = (Integer) new SpelExpressionParser()
+            .parseExpression((String) params.get("source"))
+            .getValue(context);
+        return age != null && age >= minAge;
     }
 }
+------------------
+
+@Component
+public class EmailRequiredRule implements Rule {
+    @Override
+    public String getName() {
+        return "EmailRequiredRule";
+    }
+
+    @Override
+    public boolean evaluate(RuleContext context, Map<String, Object> params) {
+        String email = (String) new SpelExpressionParser()
+            .parseExpression((String) params.get("expression"))
+            .getValue(context);
+        return email != null && !email.trim().isEmpty();
+    }
+}
+------------------
+@Component
+public class UsernameAlphaNumericRule implements Rule {
+    @Override
+    public String getName() {
+        return "UsernameAlphaNumericRule";
+    }
+
+    @Override
+    public boolean evaluate(RuleContext context, Map<String, Object> params) {
+        String username = (String) new SpelExpressionParser()
+            .parseExpression((String) params.get("source"))
+            .getValue(context);
+        return username != null && username.matches("[a-zA-Z0-9]+");
+    }
+}
+---------------------
+
+spring:
+  config:
+    import: classpath:rules-config.yml
+
+rule-engine:
+  rule-set: ${rules-config.rule-set}
+-----------
+
+rules-config:
+  rule-set:
+    operator: AND
+    rules:
+      - name: MinAgeRule
+        severity: HARD
+        errorMessage: "User must be at least 18"
+        params:
+          minAge: 18
+          source: "request.age ?: dbState.age"
+
+      - operator: OR
+        rules:
+          - name: EmailRequiredRule
+            severity: WARNING
+            errorMessage: "Email is missing"
+            params:
+              expression: "request.email"
+
+          - name: UsernameAlphaNumericRule
+            severity: HARD
+            errorMessage: "Username must be alphanumeric"
+            params:
+              source: "request.username"
