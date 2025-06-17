@@ -1,110 +1,75 @@
-Overview
-The YAML Rule Engine is a flexible, extensible, and developer-friendly validation framework built with Java + Spring Boot. It externalizes validation logic from hardcoded Java classes into declarative YAML files, allowing teams to:
+@Component
+public class RuleDocGenerator {
 
-Define reusable, readable validation rules.
+    @Value("classpath:validation.yml")
+    private Resource validationRulesFile;
 
-Assign rules to fields dynamically per use case.
+    @Value("classpath:user-validation.yml")
+    private Resource fieldRulesFile;
 
-Compose rules using logical operators (AND, OR, NOT).
+    public String generateHtmlDocumentation() throws IOException {
+        Yaml yaml = new Yaml();
 
-Use Java-based rules with parameters defined in YAML.
+        ValidationRuleConfig validationConfig;
+        FieldValidationConfig fieldConfig;
 
-Apply validations against request payloads and fallback to database values when needed.
+        try (InputStream vr = validationRulesFile.getInputStream()) {
+            validationConfig = yaml.loadAs(vr, ValidationRuleConfig.class);
+        }
 
-Capture both hard errors and warnings in a single pass.
+        try (InputStream fr = fieldRulesFile.getInputStream()) {
+            fieldConfig = yaml.loadAs(fr, FieldValidationConfig.class);
+        }
 
----------------
-Problems It Solves
+        StringBuilder html = new StringBuilder();
+        html.append("<html><head><title>Validation Rules</title></head><body>");
+        html.append("<h1>Reusable Rules</h1><ul>");
 
-| Challenge                           | Solution Provided                            |
-| ----------------------------------- | -------------------------------------------- |
-| Hardcoded validations               | YAML-based, externalized, configurable rules |
-| Repeated logic for multiple fields  | Reusable rule definitions (`validation.yml`) |
-| Complex conditions and combinations | Logical operators (`AND`, `OR`, `NOT`)       |
-| Partial fallbacks from DB           | Rule context supports fallback to DB model   |
-| Messy error handling                | Aggregated HARD and WARNING errors           |
-| Rule extensibility                  | Java classes registered automatically        |
+        for (Map.Entry<String, RuleDefinition> entry : validationConfig.getRules().entrySet()) {
+            RuleDefinition rule = entry.getValue();
+            html.append("<li><b>").append(entry.getKey()).append("</b>: ")
+                .append(rule.getDescription()).append("<br/>")
+                .append("Error: ").append(rule.getErrorMessage()).append("<br/>")
+                .append("Severity: ").append(rule.getSeverity()).append("<br/>")
+                .append("Enabled: ").append(rule.isEnabled()).append("<br/>")
+                .append("Params: ").append(rule.getParams()).append("</li><br/>");
+        }
 
+        html.append("</ul><h1>Per-field Rules</h1>");
 
+        for (Map.Entry<String, List<String>> entry : fieldConfig.getFields().entrySet()) {
+            html.append("<h3>").append(entry.getKey()).append("</h3><ul>");
+            for (String ruleName : entry.getValue()) {
+                RuleDefinition rule = validationConfig.getRules().get(ruleName);
+                if (rule != null) {
+                    html.append("<li><b>").append(rule.getName()).append("</b>: ")
+                        .append(rule.getDescription()).append("<br/>")
+                        .append("Error: ").append(rule.getErrorMessage()).append("<br/>")
+                        .append("Severity: ").append(rule.getSeverity()).append("<br/>")
+                        .append("Params: ").append(rule.getParams()).append("</li><br/>");
+                }
+            }
+            html.append("</ul>");
+        }
 
+        html.append("</body></html>");
+        return html.toString();
+    }
+}
 ---------------------
 
-                    ┌────────────────────┐
-                    │ user-validation.yml│
-                    └────────┬───────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        ▼                    ▼                    ▼
-     Field: age           Field: name         Field: platformName
-        │                    │                    │
-        ▼                    ▼                    ▼
-    Operator: OR        Operator: AND       RuleLeaf: platformNameCheck
-        │                    │
-    ┌────┴────┐        ┌─────┴─────┐
-    ▼         ▼        ▼     ▼     ▼
-ageCheck  ageFallback  required  maxLength  noSpecialChar
-                             │
-                             ▼
-                     Evaluate each rule
-                             │
-            ┌────────────┬──────────────┐
-            ▼            ▼              ▼
-       RuleResult    RuleResult     RuleResult
-        (HARD)         (WARN)         (PASS)
+@RestController
+@RequestMapping("/docs")
+public class RuleDocController {
 
+    private final RuleDocGenerator generator;
 
-fields:
-  age:
-    rule:
-      operator: OR
-      rules:
-        - ruleName: ageCheck
-        - ruleName: ageFallbackCheck
+    public RuleDocController(RuleDocGenerator generator) {
+        this.generator = generator;
+    }
 
-  name:
-    rule:
-      operator: AND
-      rules:
-        - ruleName: requiredCheck
-        - ruleName: maxLengthCheck
-        - ruleName: noSpecialCharCheck
-
-  platformName:
-    rule:
-      ruleName: platformNameCheck
-
-[Engine] ➤ Validating field: age
-[Engine]    → OR combination detected
-[Engine]       ↪ Evaluating rule: ageCheck → ❌ FAILED (HARD)
-[Engine]       ↪ Evaluating rule: ageFallbackCheck → ❌ FAILED (HARD)
-[Engine]    → OR result = ❌ FAILED
-[Engine]    → Collecting HARD error: age = Age is too young
-
-[Engine] ➤ Validating field: name
-[Engine]    → AND combination detected
-[Engine]       ↪ Evaluating rule: requiredCheck → ❌ FAILED (HARD)
-[Engine]       ↪ Evaluating rule: maxLengthCheck → ✅ PASSED
-[Engine]       ↪ Evaluating rule: noSpecialCharCheck → ⚠️ WARNING
-[Engine]    → AND result = ❌ FAILED
-[Engine]    → Collecting HARD error: name = Name is required
-[Engine]    → Collecting WARNING: name = Name has special characters
-
-[Engine] ➤ Validating field: platformName
-[Engine]    → Evaluating rule: platformNameCheck → ❌ FAILED (HARD)
-[Engine]    → Collecting HARD error: platformName = Invalid platform
-
-
-
-
-Pros
-✅ Externalized & human-readable rules
-
-✅ Logical operators and composition
-
-✅ Auto-wiring of new rule classes
-
-✅ Built-in SpEL for dynamic expressions
-
-✅ Supports both payload and DB fallback
-
-✅ Accumulates all errors (no short-circuiting)
+    @GetMapping(value = "/rules", produces = MediaType.TEXT_HTML_VALUE)
+    public String getRulesDoc() throws IOException {
+        return generator.generateHtmlDocumentation();
+    }
+}
