@@ -50,4 +50,36 @@ public class Dataset {
     public void setRecords(int records) {
         this.records = records;
     }
+
+    AsyncContext asyncContext = request.startAsync();
+asyncContext.start(() -> {
+    try {
+        HttpServletRequest req = (HttpServletRequest) asyncContext.getRequest(); // safe reference
+        HttpServletResponse resp = (HttpServletResponse) asyncContext.getResponse();
+
+        // work...
+    } finally {
+        asyncContext.complete();
+    }
+});
+
+------------
+
+    import org.springframework.boot.web.servlet.ServletRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.DispatcherServlet;
+
+@Configuration
+public class AsyncDispatcherConfig {
+
+    @Bean
+    public ServletRegistrationBean<DispatcherServlet> dispatcherRegistration(DispatcherServlet dispatcherServlet) {
+        ServletRegistrationBean<DispatcherServlet> registration = new ServletRegistrationBean<>(dispatcherServlet, "/");
+        registration.setAsyncSupported(true); // ✅ Enable async
+        return registration;
+    }
+}
+
+
 }
