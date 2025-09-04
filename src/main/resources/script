@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -e
+
+YML_FILE="src/main/resources/dataset-validation.yml"
+
+if [ $# -lt 2 ]; then
+  echo "Usage: $0 <fieldName> <rule1> [rule2 rule3 ...]"
+  echo "Example: $0 sensitivity.hasPii required maxLength enumCheck"
+  exit 1
+fi
+
+FIELD_NAME=$1
+shift
+RULES=("$@")
+
+# Check if already exists
+if grep -q "^[[:space:]]\{6\}$FIELD_NAME:" "$YML_FILE"; then
+  echo "⚠️  Field '$FIELD_NAME' already exists in $YML_FILE"
+  exit 0
+fi
+
+awk -v field="$FIELD_NAME" -v rules="$(IFS=,; echo "${RULES[*]}")" '
+  BEGIN {
+    inside=0; added=0
+    n=split(rules, arr, ",")
+  }
+  /^    fields:/ { print; inside=1; next }
+  inside && /^[^ ]/ {
+    if (!added) {
+      print "      " field ":"
+      print "        rules:"
+      if (n > 1) {
+        print "          and:"
+        for (i=1; i<=n; i++) {
+          print "            - rule: " arr[i]
+          print "              enabled: true"
+          print "              severity: HARD"
+          print "              message: \"TODO for " arr[i] "\""
+          print "              check: \"TODO: SpEL for " arr[i] "\""
+        }
+      } else {
+        print "          - rule: " arr[1]
+        print "            enabled: true"
+        print "            severity: HARD"
+        print "            message: \"TODO for " arr[1] "\""
+        print "            check: \"TODO: SpEL for " arr[1] "\""
+      }
+      added=1
+    }
+    inside=0
+  }
+  { print }
+  END {
+    if (inside && !added) {
+      print "      " field ":"
+      print "        rules:"
+      if (n > 1) {
+        print "          and:"
+        for (i=1; i<=n; i++) {
+          print "            - rule: " arr[i]
+          print "              enabled: true"
+          print "              severity: HARD"
+          print "              message: \"TODO for " arr[i] "\""
+          print "              check: \"TODO: SpEL for " arr[i] "\""
+        }
+      } else {
+        print "          - rule: " arr[1]
+        print "            enabled: true"
+        print "            severity: HARD"
+        print "            message: \"TODO for " arr[1] "\""
+        print "            check: \"TODO: SpEL for " arr[1] "\""
+      }
+    }
+  }
+' "$YML_FILE" > "$YML_FILE.tmp" && mv "$YML_FILE.tmp" "$YML_FILE"
+
+echo "✅ Added $FIELD_NAME with rules: ${RULES[*]}"
